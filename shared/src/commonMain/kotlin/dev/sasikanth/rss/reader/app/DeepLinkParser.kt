@@ -32,13 +32,42 @@ object DeepLinkParser {
     if (uriString.startsWith("twine://reader/")) {
       try {
         val jsonStr = uriString.removePrefix("twine://reader/")
-        // In Navigation 2, Reader arguments were passed as a JSON string in the route
-        val args = Json.decodeFromString(ReaderScreenArgs.serializer(), jsonStr)
+        val decodedJson = percentDecodeUtf8(jsonStr)
+        val args = Json.decodeFromString(ReaderScreenArgs.serializer(), decodedJson)
         return Screen.Reader(args)
       } catch (e: Exception) {
         // Fallback or ignore
       }
     }
     return null
+  }
+
+  private fun percentDecodeUtf8(value: String): String {
+    if ('%' !in value) return value
+
+    val out = ByteArray(value.length * 4)
+    var o = 0
+    var i = 0
+    while (i < value.length) {
+      val c = value[i]
+      if (c == '%' && i + 2 < value.length) {
+        val decoded = value.substring(i + 1, i + 3).toIntOrNull(16)
+        if (decoded != null) {
+          out[o++] = decoded.toByte()
+          i += 3
+          continue
+        }
+      }
+      val code = c.code
+      if (code < 0x80) {
+        out[o++] = code.toByte()
+      } else {
+        val utf8 = c.toString().encodeToByteArray()
+        utf8.copyInto(out, o)
+        o += utf8.size
+      }
+      i++
+    }
+    return out.decodeToString(endIndex = o)
   }
 }
