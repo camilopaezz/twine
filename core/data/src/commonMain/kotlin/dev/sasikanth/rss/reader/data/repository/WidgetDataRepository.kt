@@ -18,8 +18,6 @@
 package dev.sasikanth.rss.reader.data.repository
 
 import androidx.paging.PagingSource
-import app.cash.sqldelight.coroutines.asFlow
-import app.cash.sqldelight.coroutines.mapToList
 import app.cash.sqldelight.paging3.QueryPagingSource
 import dev.sasikanth.rss.reader.core.model.local.PostFlag
 import dev.sasikanth.rss.reader.core.model.local.ResolvedPost
@@ -30,7 +28,6 @@ import dev.sasikanth.rss.reader.di.scopes.AppScope
 import dev.sasikanth.rss.reader.util.DispatchersProvider
 import kotlin.collections.Set
 import kotlin.time.Instant
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import me.tatarka.inject.annotations.Inject
 
@@ -52,51 +49,6 @@ class WidgetDataRepository(
         )
         .executeAsOne()
     }
-  }
-
-  fun unreadPosts(numberOfPosts: Int): Flow<List<WidgetPost>> {
-    return postQueries
-      .widgetUnreadPosts(
-        numberOfPosts = numberOfPosts.toLong(),
-        offset = 0,
-        sessionPostIds = emptyList(),
-        mapper = {
-          id: String,
-          _: String,
-          title: String,
-          description: String,
-          imageUrl: String?,
-          _: String?,
-          date: Instant,
-          _: Instant,
-          _: String,
-          _: String?,
-          _: Set<PostFlag>,
-          _: String?,
-          feedName: String,
-          feedIcon: String,
-          _: String,
-          _: Boolean,
-          _: Boolean,
-          feedContentReadingTime: Long?,
-          _: Long?,
-          _: Long?,
-          _: Long,
-          _: Long ->
-          WidgetPost(
-            id = id,
-            title = title,
-            description = description,
-            image = imageUrl,
-            postedOn = date,
-            feedName = feedName,
-            feedIcon = feedIcon,
-            readingTimeEstimate = feedContentReadingTime?.toInt() ?: 0,
-          )
-        },
-      )
-      .asFlow()
-      .mapToList(dispatchersProvider.databaseRead)
   }
 
   suspend fun unreadPostsBlocking(numberOfPosts: Int): List<WidgetPost> {

@@ -18,18 +18,12 @@
 package dev.sasikanth.rss.reader.widget
 
 import android.content.Context
-import android.content.Intent
 import android.graphics.Bitmap
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.net.toUri
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.glance.ColorFilter
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
@@ -39,15 +33,20 @@ import androidx.glance.ImageProvider
 import androidx.glance.LocalContext
 import androidx.glance.action.ActionParameters
 import androidx.glance.action.clickable
+import androidx.glance.appwidget.CircularProgressIndicator
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.SizeMode
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
+import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.lazy.LazyColumn
 import androidx.glance.appwidget.lazy.itemsIndexed
 import androidx.glance.appwidget.provideContent
+import androidx.glance.appwidget.state.getAppWidgetState
+import androidx.glance.appwidget.state.updateAppWidgetState
 import androidx.glance.background
+import androidx.glance.currentState
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
 import androidx.glance.layout.Column
@@ -65,23 +64,14 @@ import androidx.glance.state.PreferencesGlanceStateDefinition
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
-import coil3.compose.setSingletonImageLoaderFactory
-import coil3.imageLoader
-import coil3.request.CachePolicy
-import coil3.request.ErrorResult
-import coil3.request.ImageRequest
-import coil3.request.SuccessResult
-import coil3.toBitmap
-import dev.sasikanth.rss.reader.MainActivity
 import dev.sasikanth.rss.reader.R
 import dev.sasikanth.rss.reader.ReaderApplication
-import dev.sasikanth.rss.reader.app.Screen
-import dev.sasikanth.rss.reader.core.model.local.WidgetPost
-import dev.sasikanth.rss.reader.reader.ReaderScreenArgs
-import kotlin.time.Clock
-import kotlin.time.Instant
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class TwineUnreadLargeWidget : GlanceAppWidget() {
 
@@ -95,76 +85,61 @@ class TwineUnreadLargeWidget : GlanceAppWidget() {
     val imageLoader = applicationComponent.imageLoader
     val billingHandler = applicationComponent.billingHandler
 
+    val postIds =
+      widgetDataRepository.unreadPostsBlocking(NUMBER_OF_UNREAD_POSTS_IN_WIDGET).map { it.id }
+    val snapshot =
+      UnreadWidgetSnapshotCache.get(SNAPSHOT_KIND, postIds)
+        ?: loadUnreadWidgetSnapshot(
+            context = context,
+            widgetDataRepository = widgetDataRepository,
+            imageLoader = imageLoader,
+            billingHandler = billingHandler,
+            postCount = NUMBER_OF_UNREAD_POSTS_IN_WIDGET,
+            imagePx = IMAGE_PX,
+            iconPx = ICON_PX,
+          )
+          .also { UnreadWidgetSnapshotCache.put(SNAPSHOT_KIND, postIds, it) }
+
     provideContent {
-      val unreadPosts by
-        remember { widgetDataRepository.unreadPosts(NUMBER_OF_UNREAD_POSTS_IN_WIDGET) }
-          .collectAsState(initial = emptyList())
-
-      var isSubscribed: Boolean? by remember { mutableStateOf(null) }
-      LaunchedEffect(Unit) { isSubscribed = billingHandler.isSubscribed() }
-
-      setSingletonImageLoaderFactory { imageLoader }
-
-      GlanceTheme { WidgetContent(unreadPosts = unreadPosts, isSubscribed = isSubscribed) }
+      GlanceTheme {
+        val prefs = currentState<Preferences>()
+        val isRefreshing = prefs[RefreshingKey] == true
+        WidgetContent(snapshot = snapshot, isRefreshing = isRefreshing)
+      }
     }
   }
 
   @Composable
-  private fun WidgetContent(unreadPosts: List<WidgetPost>, isSubscribed: Boolean?) {
-    val context = LocalContext.current
+  private fun WidgetContent(snapshot: UnreadWidgetSnapshot, isRefreshing: Boolean) {
+    if (!snapshot.isSubscribed) {
+      RequireTwinePremium()
+    } else {
+      Box(
+        modifier =
+          GlanceModifier.fillMaxSize()
+            .background(GlanceTheme.colors.widgetBackground)
+            .appWidgetInnerCornerRadius(28.dp)
+            .padding(4.dp)
+      ) {
+        if (snapshot.posts.isEmpty()) {
+          NoPostsLarge()
+        } else {
+          Column(modifier = GlanceModifier.fillMaxSize()) {
+            Header(isRefreshing = isRefreshing)
 
-    when (isSubscribed) {
-      true,
-      null -> {
-        Box(
-          modifier =
-            GlanceModifier.fillMaxSize()
-              .background(GlanceTheme.colors.widgetBackground)
-              .appWidgetInnerCornerRadius(28.dp)
-              .padding(4.dp)
-        ) {
-          if (unreadPosts.isEmpty()) {
-            NoPostsLarge()
-          } else {
-            Column(modifier = GlanceModifier.fillMaxSize()) {
-              Header()
-
-              LazyColumn {
-                itemsIndexed(unreadPosts) { index, post ->
-                  PostItem(
-                    post = post,
-                    index = index,
-                    onClick = {
-                      val readerScreenArgs =
-                        ReaderScreenArgs(
-                          postIndex = index,
-                          postId = post.id,
-                          fromScreen = ReaderScreenArgs.FromScreen.UnreadWidget,
-                        )
-                      val uri = Screen.Reader(readerScreenArgs).toRoute().toUri()
-
-                      val deepLinkIntent =
-                        Intent(Intent.ACTION_VIEW, uri, context, MainActivity::class.java).apply {
-                          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                      context.startActivity(deepLinkIntent)
-                    },
-                  )
-                }
+            LazyColumn {
+              itemsIndexed(snapshot.posts) { index, postSnapshot ->
+                PostItem(postSnapshot = postSnapshot, index = index)
               }
             }
           }
         }
       }
-
-      false -> {
-        RequireTwinePremium()
-      }
     }
   }
 
   @Composable
-  private fun Header() {
+  private fun Header(isRefreshing: Boolean) {
     val context = LocalContext.current
     Row(
       modifier =
@@ -196,6 +171,12 @@ class TwineUnreadLargeWidget : GlanceAppWidget() {
               GlanceModifier.size(32.dp).background(GlanceTheme.colors.surface).cornerRadius(99.dp),
             contentAlignment = Alignment.Center,
           ) {
+            if (isRefreshing) {
+              CircularProgressIndicator(
+                color = GlanceTheme.colors.onSurface,
+                modifier = GlanceModifier.size(24.dp),
+              )
+            }
             Image(
               provider = ImageProvider(R.drawable.ic_refresh),
               contentDescription = null,
@@ -209,17 +190,9 @@ class TwineUnreadLargeWidget : GlanceAppWidget() {
 
         Box(
           modifier =
-            GlanceModifier.cornerRadius(99.dp).size(32.dp).clickable {
-              val deepLinkIntent =
-                Intent(
-                    Intent.ACTION_VIEW,
-                    "twine://bookmarks".toUri(),
-                    context,
-                    MainActivity::class.java,
-                  )
-                  .apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-              context.startActivity(deepLinkIntent)
-            },
+            GlanceModifier.cornerRadius(99.dp)
+              .size(32.dp)
+              .clickable(actionStartActivity(UnreadWidgetIntents.bookmarks(context))),
           contentAlignment = Alignment.Center,
         ) {
           Box(
@@ -240,13 +213,14 @@ class TwineUnreadLargeWidget : GlanceAppWidget() {
   }
 
   @Composable
-  private fun PostItem(post: WidgetPost, index: Int, onClick: () -> Unit) {
+  private fun PostItem(postSnapshot: UnreadWidgetPostSnapshot, index: Int) {
     val context = LocalContext.current
+    val post = postSnapshot.post
     Row(
       modifier =
         GlanceModifier.fillMaxWidth()
           .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp)
-          .clickable(onClick),
+          .clickable(actionStartActivity(UnreadWidgetIntents.reader(context, index, post.id))),
       verticalAlignment = Alignment.CenterVertically,
     ) {
       Column(modifier = GlanceModifier.defaultWeight()) {
@@ -262,14 +236,14 @@ class TwineUnreadLargeWidget : GlanceAppWidget() {
           modifier = GlanceModifier.fillMaxWidth().height(32.dp),
         )
         Spacer(GlanceModifier.height(8.dp))
-        PublisherInfo(post = post)
+        PublisherInfo(postSnapshot = postSnapshot)
       }
 
       Spacer(GlanceModifier.width(12.dp))
 
       val hasImage = !post.image.isNullOrBlank()
       if (hasImage) {
-        PostImage(url = post.image)
+        PostImage(bitmap = postSnapshot.image)
       } else {
         Box(modifier = GlanceModifier.size(56.dp)) {}
       }
@@ -277,14 +251,10 @@ class TwineUnreadLargeWidget : GlanceAppWidget() {
   }
 
   @Composable
-  private fun PostImage(url: String?) {
-    val context = LocalContext.current
-    var postImage by remember(url) { mutableStateOf<Bitmap?>(null) }
-    LaunchedEffect(url) { postImage = context.getImage(url = url) }
-
-    if (postImage != null) {
+  private fun PostImage(bitmap: Bitmap?) {
+    if (bitmap != null) {
       Image(
-        provider = ImageProvider(postImage!!),
+        provider = ImageProvider(bitmap),
         contentDescription = null,
         contentScale = ContentScale.Crop,
         modifier = GlanceModifier.size(56.dp).cornerRadius(14.dp),
@@ -293,17 +263,16 @@ class TwineUnreadLargeWidget : GlanceAppWidget() {
   }
 
   @Composable
-  private fun PublisherInfo(post: WidgetPost) {
+  private fun PublisherInfo(postSnapshot: UnreadWidgetPostSnapshot) {
     val context = LocalContext.current
+    val post = postSnapshot.post
     Row(verticalAlignment = Alignment.CenterVertically) {
       // Feed Icon
       Box(modifier = GlanceModifier.size(12.dp)) {
-        var feedIcon by remember(post.feedIcon) { mutableStateOf<Bitmap?>(null) }
-        LaunchedEffect(post.feedIcon) { feedIcon = context.getImage(url = post.feedIcon) }
-
+        val feedIcon = postSnapshot.feedIcon
         if (feedIcon != null) {
           Image(
-            provider = ImageProvider(feedIcon!!),
+            provider = ImageProvider(feedIcon),
             contentDescription = null,
             modifier = GlanceModifier.fillMaxSize().cornerRadius(2.dp),
           )
@@ -331,7 +300,7 @@ class TwineUnreadLargeWidget : GlanceAppWidget() {
       val relativeTime = post.postedOn.formatRelativeTime(context)
       if (relativeTime.isNotBlank()) {
         Text(
-          text = " \u2022 $relativeTime",
+          text = " • $relativeTime",
           style =
             TextStyle(
               color = GlanceTheme.colors.onSurfaceVariant,
@@ -345,7 +314,7 @@ class TwineUnreadLargeWidget : GlanceAppWidget() {
       if (post.readingTimeEstimate > 0) {
         Text(
           text =
-            " \u2022 ${context.getString(R.string.unit_minutes, post.readingTimeEstimate)} read",
+            " • ${context.getString(R.string.unit_minutes, post.readingTimeEstimate)} read",
           style =
             TextStyle(
               color = GlanceTheme.colors.onSurfaceVariant,
@@ -381,42 +350,12 @@ class TwineUnreadLargeWidget : GlanceAppWidget() {
     }
   }
 
-  private fun Instant.formatRelativeTime(context: Context): String {
-    val now = Clock.System.now()
-    val duration = now - this
-    val seconds = duration.inWholeSeconds
-    val days = duration.inWholeDays
-
-    return when {
-      seconds < 60 -> context.getString(R.string.unit_seconds)
-      seconds < 3600 -> context.getString(R.string.unit_minutes, duration.inWholeMinutes.toInt())
-      seconds < 86400 -> context.getString(R.string.unit_hours, duration.inWholeHours.toInt())
-      days < 7 -> context.getString(R.string.unit_days, days.toInt())
-      else -> ""
-    }
-  }
-
-  private suspend fun Context.getImage(url: String?): Bitmap? {
-    if (url.isNullOrBlank()) return null
-
-    val request =
-      ImageRequest.Builder(this)
-        .size(200)
-        .data(url)
-        .memoryCachePolicy(CachePolicy.ENABLED)
-        .diskCachePolicy(CachePolicy.ENABLED)
-        .build()
-
-    return withContext(Dispatchers.IO) {
-      when (val result = imageLoader.execute(request)) {
-        is ErrorResult -> null
-        is SuccessResult -> result.image.toBitmap()
-      }
-    }
-  }
-
   companion object {
     private const val NUMBER_OF_UNREAD_POSTS_IN_WIDGET = 15
+    private const val SNAPSHOT_KIND = "large"
+    private const val IMAGE_PX = 112
+    private const val ICON_PX = 24
+    val RefreshingKey = booleanPreferencesKey("large_refreshing")
   }
 }
 
@@ -426,7 +365,33 @@ class LargeRefreshAction : ActionCallback {
     glanceId: GlanceId,
     parameters: ActionParameters,
   ) {
-    val applicationComponent = (context.applicationContext as ReaderApplication).appComponent
+    val appContext = context.applicationContext
+    updateAppWidgetState(appContext, glanceId) { prefs ->
+      prefs[TwineUnreadLargeWidget.RefreshingKey] = true
+    }
+    TwineUnreadLargeWidget().update(appContext, glanceId)
+
+    val applicationComponent = (appContext as ReaderApplication).appComponent
     applicationComponent.syncCoordinator.triggerPull()
+
+    refreshTimeoutScope.launch {
+      delay(REFRESH_TIMEOUT_MS)
+      try {
+        val prefs = getAppWidgetState(appContext, PreferencesGlanceStateDefinition, glanceId)
+        if (prefs[TwineUnreadLargeWidget.RefreshingKey] == true) {
+          updateAppWidgetState(appContext, glanceId) {
+            it[TwineUnreadLargeWidget.RefreshingKey] = false
+          }
+          TwineUnreadLargeWidget().update(appContext, glanceId)
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (_: Exception) {}
+    }
+  }
+
+  private companion object {
+    val refreshTimeoutScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    const val REFRESH_TIMEOUT_MS = 30_000L
   }
 }

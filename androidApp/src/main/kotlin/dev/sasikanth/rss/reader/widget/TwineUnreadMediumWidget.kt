@@ -18,18 +18,10 @@
 package dev.sasikanth.rss.reader.widget
 
 import android.content.Context
-import android.content.Intent
 import android.graphics.Bitmap
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.net.toUri
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.glance.ColorFilter
@@ -45,6 +37,7 @@ import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.SizeMode
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
+import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.appwidget.state.updateAppWidgetState
@@ -68,27 +61,12 @@ import androidx.glance.state.PreferencesGlanceStateDefinition
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
-import coil3.compose.setSingletonImageLoaderFactory
-import coil3.imageLoader
-import coil3.request.CachePolicy
-import coil3.request.ErrorResult
-import coil3.request.ImageRequest
-import coil3.request.SuccessResult
-import coil3.toBitmap
-import dev.sasikanth.rss.reader.MainActivity
 import dev.sasikanth.rss.reader.R
 import dev.sasikanth.rss.reader.ReaderApplication
-import dev.sasikanth.rss.reader.app.Screen
-import dev.sasikanth.rss.reader.core.model.local.WidgetPost
-import dev.sasikanth.rss.reader.reader.ReaderScreenArgs
-import kotlin.time.Clock
-import kotlin.time.Instant
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 class TwineUnreadMediumWidget : GlanceAppWidget() {
 
-  override val sizeMode: SizeMode = SizeMode.Exact
+  override val sizeMode: SizeMode = SizeMode.Single
 
   override val stateDefinition: GlanceStateDefinition<*> = PreferencesGlanceStateDefinition
 
@@ -98,87 +76,71 @@ class TwineUnreadMediumWidget : GlanceAppWidget() {
     val imageLoader = applicationComponent.imageLoader
     val billingHandler = applicationComponent.billingHandler
 
+    val postIds =
+      widgetDataRepository.unreadPostsBlocking(NUMBER_OF_UNREAD_POSTS_IN_WIDGET).map { it.id }
+    val snapshot =
+      UnreadWidgetSnapshotCache.get(SNAPSHOT_KIND, postIds)
+        ?: loadUnreadWidgetSnapshot(
+            context = context,
+            widgetDataRepository = widgetDataRepository,
+            imageLoader = imageLoader,
+            billingHandler = billingHandler,
+            postCount = NUMBER_OF_UNREAD_POSTS_IN_WIDGET,
+            imagePx = IMAGE_PX,
+            iconPx = ICON_PX,
+          )
+          .also { UnreadWidgetSnapshotCache.put(SNAPSHOT_KIND, postIds, it) }
+
+    updateAppWidgetState(context, id) { prefs ->
+      if (prefs[PostCountKey] != snapshot.posts.size) {
+        prefs[PostCountKey] = snapshot.posts.size
+      }
+    }
+
     provideContent {
-      val unreadPosts by
-        remember { widgetDataRepository.unreadPosts(NUMBER_OF_UNREAD_POSTS_IN_WIDGET) }
-          .collectAsState(initial = emptyList())
-
-      var isSubscribed: Boolean? by remember { mutableStateOf(null) }
-      LaunchedEffect(Unit) { isSubscribed = billingHandler.isSubscribed() }
-
-      setSingletonImageLoaderFactory { imageLoader }
-
       GlanceTheme {
         val prefs = currentState<Preferences>()
         val currentIndex = prefs[CurrentIndexKey] ?: 0
 
-        WidgetContent(
-          unreadPosts = unreadPosts,
-          currentIndex = currentIndex,
-          isSubscribed = isSubscribed,
-        )
+        WidgetContent(snapshot = snapshot, currentIndex = currentIndex)
       }
     }
   }
 
   @Composable
-  private fun WidgetContent(
-    unreadPosts: List<WidgetPost>,
-    currentIndex: Int,
-    isSubscribed: Boolean?,
-  ) {
-    val context = LocalContext.current
+  private fun WidgetContent(snapshot: UnreadWidgetSnapshot, currentIndex: Int) {
+    if (!snapshot.isSubscribed) {
+      RequireTwinePremium()
+    } else {
+      Box(
+        modifier =
+          GlanceModifier.fillMaxSize()
+            .background(GlanceTheme.colors.widgetBackground)
+            .appWidgetInnerCornerRadius(28.dp)
+            .padding(4.dp)
+      ) {
+        if (snapshot.posts.isEmpty()) {
+          NoPostsMedium()
+        } else {
+          val safeIndex = if (currentIndex < snapshot.posts.size) currentIndex else 0
+          val postSnapshot = snapshot.posts[safeIndex]
 
-    when (isSubscribed) {
-      true,
-      null -> {
-        Box(
-          modifier =
-            GlanceModifier.fillMaxSize()
-              .background(GlanceTheme.colors.widgetBackground)
-              .appWidgetInnerCornerRadius(28.dp)
-              .padding(4.dp)
-        ) {
-          if (unreadPosts.isEmpty()) {
-            NoPostsMedium()
-          } else {
-            val safeIndex = if (currentIndex < unreadPosts.size) currentIndex else 0
-            val post = unreadPosts[safeIndex]
-
-            PostContent(
-              post = post,
-              index = safeIndex,
-              count = unreadPosts.size,
-              onClick = {
-                val readerScreenArgs =
-                  ReaderScreenArgs(
-                    postIndex = safeIndex,
-                    postId = post.id,
-                    fromScreen = ReaderScreenArgs.FromScreen.UnreadWidget,
-                  )
-                val uri = Screen.Reader(readerScreenArgs).toRoute().toUri()
-
-                val deepLinkIntent =
-                  Intent(Intent.ACTION_VIEW, uri, context, MainActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                  }
-                context.startActivity(deepLinkIntent)
-              },
-            )
-          }
+          PostContent(postSnapshot = postSnapshot, index = safeIndex, count = snapshot.posts.size)
         }
       }
-      false -> {
-        RequireTwinePremium()
-      }
     }
   }
 
   @Composable
-  private fun PostContent(post: WidgetPost, index: Int, count: Int, onClick: () -> Unit) {
+  private fun PostContent(postSnapshot: UnreadWidgetPostSnapshot, index: Int, count: Int) {
     val context = LocalContext.current
+    val post = postSnapshot.post
 
-    Column(modifier = GlanceModifier.fillMaxSize().clickable(onClick)) {
+    Column(
+      modifier =
+        GlanceModifier.fillMaxSize()
+          .clickable(actionStartActivity(UnreadWidgetIntents.reader(context, index, post.id)))
+    ) {
       // Header
       Row(
         modifier =
@@ -225,27 +187,26 @@ class TwineUnreadMediumWidget : GlanceAppWidget() {
             modifier = GlanceModifier.fillMaxWidth(),
           )
           Spacer(GlanceModifier.defaultWeight())
-          PublisherInfo(post = post)
+          PublisherInfo(postSnapshot = postSnapshot)
         }
 
         val hasImage = !post.image.isNullOrBlank()
         if (hasImage) {
-          PostImage(url = post.image, modifier = GlanceModifier.size(128.dp).fillMaxHeight())
+          PostImage(
+            bitmap = postSnapshot.image,
+            modifier = GlanceModifier.size(128.dp).fillMaxHeight(),
+          )
         }
       }
     }
   }
 
   @Composable
-  private fun PostImage(url: String?, modifier: GlanceModifier = GlanceModifier) {
-    val context = LocalContext.current
-    var postImage by remember(url) { mutableStateOf<Bitmap?>(null) }
-    LaunchedEffect(url) { postImage = context.getImage(url = url) }
-
+  private fun PostImage(bitmap: Bitmap?, modifier: GlanceModifier = GlanceModifier) {
     Box(modifier = GlanceModifier.then(modifier).appWidgetInnerCornerRadius(4.dp)) {
-      if (postImage != null) {
+      if (bitmap != null) {
         Image(
-          provider = ImageProvider(postImage!!),
+          provider = ImageProvider(bitmap),
           contentDescription = null,
           contentScale = ContentScale.Crop,
           modifier = GlanceModifier.fillMaxSize(),
@@ -255,17 +216,16 @@ class TwineUnreadMediumWidget : GlanceAppWidget() {
   }
 
   @Composable
-  private fun PublisherInfo(post: WidgetPost) {
+  private fun PublisherInfo(postSnapshot: UnreadWidgetPostSnapshot) {
     val context = LocalContext.current
+    val post = postSnapshot.post
     Row(verticalAlignment = Alignment.CenterVertically) {
       // Feed Icon
       Box(modifier = GlanceModifier.size(16.dp)) {
-        var feedIcon by remember(post.feedIcon) { mutableStateOf<Bitmap?>(null) }
-        LaunchedEffect(post.feedIcon) { feedIcon = context.getImage(url = post.feedIcon) }
-
+        val feedIcon = postSnapshot.feedIcon
         if (feedIcon != null) {
           Image(
-            provider = ImageProvider(feedIcon!!),
+            provider = ImageProvider(feedIcon),
             contentDescription = null,
             modifier = GlanceModifier.fillMaxSize().cornerRadius(2.dp),
           )
@@ -293,7 +253,7 @@ class TwineUnreadMediumWidget : GlanceAppWidget() {
       val relativeTime = post.postedOn.formatRelativeTime(context)
       if (relativeTime.isNotBlank()) {
         Text(
-          text = " \u2022 $relativeTime",
+          text = " • $relativeTime",
           style =
             TextStyle(
               color = GlanceTheme.colors.onSurfaceVariant,
@@ -307,7 +267,7 @@ class TwineUnreadMediumWidget : GlanceAppWidget() {
       if (post.readingTimeEstimate > 0) {
         Text(
           text =
-            " \u2022 ${context.getString(R.string.unit_minutes, post.readingTimeEstimate)} read",
+            " • ${context.getString(R.string.unit_minutes, post.readingTimeEstimate)} read",
           style =
             TextStyle(
               color = GlanceTheme.colors.onSurfaceVariant,
@@ -421,43 +381,13 @@ class TwineUnreadMediumWidget : GlanceAppWidget() {
     }
   }
 
-  private fun Instant.formatRelativeTime(context: Context): String {
-    val now = Clock.System.now()
-    val duration = now - this
-    val seconds = duration.inWholeSeconds
-    val days = duration.inWholeDays
-
-    return when {
-      seconds < 60 -> context.getString(R.string.unit_seconds)
-      seconds < 3600 -> context.getString(R.string.unit_minutes, duration.inWholeMinutes.toInt())
-      seconds < 86400 -> context.getString(R.string.unit_hours, duration.inWholeHours.toInt())
-      days < 7 -> context.getString(R.string.unit_days, days.toInt())
-      else -> "" // Don't show for older posts in widget
-    }
-  }
-
-  private suspend fun Context.getImage(url: String?): Bitmap? {
-    if (url.isNullOrBlank()) return null
-
-    val request =
-      ImageRequest.Builder(this)
-        .size(300)
-        .data(url)
-        .memoryCachePolicy(CachePolicy.ENABLED)
-        .diskCachePolicy(CachePolicy.ENABLED)
-        .build()
-
-    return withContext(Dispatchers.IO) {
-      when (val result = imageLoader.execute(request)) {
-        is ErrorResult -> null
-        is SuccessResult -> result.image.toBitmap()
-      }
-    }
-  }
-
   companion object {
     private const val NUMBER_OF_UNREAD_POSTS_IN_WIDGET = 5
+    private const val SNAPSHOT_KIND = "medium"
+    private const val IMAGE_PX = 300
+    private const val ICON_PX = 24
     val CurrentIndexKey = intPreferencesKey("medium_current_index")
+    val PostCountKey = intPreferencesKey("medium_post_count")
   }
 }
 
@@ -468,8 +398,10 @@ class MediumNextPostAction : ActionCallback {
     parameters: ActionParameters,
   ) {
     updateAppWidgetState(context, glanceId) { prefs ->
+      val count = prefs[TwineUnreadMediumWidget.PostCountKey] ?: 0
+      if (count == 0) return@updateAppWidgetState
       val currentIndex = prefs[TwineUnreadMediumWidget.CurrentIndexKey] ?: 0
-      prefs[TwineUnreadMediumWidget.CurrentIndexKey] = (currentIndex + 1) % 5
+      prefs[TwineUnreadMediumWidget.CurrentIndexKey] = (currentIndex + 1) % count
     }
     TwineUnreadMediumWidget().update(context, glanceId)
   }
