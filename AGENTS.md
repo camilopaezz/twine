@@ -48,6 +48,7 @@ The project follows a modular Kotlin Multiplatform structure:
 - OPML import and export.
 
 ## PR instructions
+- This is a fork for a couple of quirks i have, do not open prs against msasikanth/twine upstream
 - Title format: <Title>. Title should not include any emojis
 - Always run `./gradlew spotlessApply` before committing.
 
