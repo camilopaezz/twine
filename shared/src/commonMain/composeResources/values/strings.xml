@@ -131,6 +131,7 @@
   <string name="markAllAsReadDialogTitle">Mark all as read?</string>
   <string name="markAllAsReadDialogDesc">Are you sure you want to mark all articles as read?</string>
   <string name="openWebsite">Open Website</string>
+  <string name="openArchive">Open Archive</string>
   <string name="noNewPosts">No new content</string>
   <string name="noNewPostsSubtitle">Check back later or pull down to check for new content now</string>
   <string name="postsAll">All</string>
