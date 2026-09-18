@@ -67,6 +67,7 @@ import dev.sasikanth.rss.reader.components.IconButton
 import dev.sasikanth.rss.reader.components.IconButtonSize
 import dev.sasikanth.rss.reader.components.image.FeedIcon
 import dev.sasikanth.rss.reader.platform.LocalLinkHandler
+import dev.sasikanth.rss.reader.resources.icons.Archive
 import dev.sasikanth.rss.reader.resources.icons.Bookmark
 import dev.sasikanth.rss.reader.resources.icons.Bookmarked
 import dev.sasikanth.rss.reader.resources.icons.Comments
@@ -79,6 +80,7 @@ import dev.sasikanth.rss.reader.resources.icons.Website
 import dev.sasikanth.rss.reader.share.LocalShareHandler
 import dev.sasikanth.rss.reader.ui.AppTheme
 import dev.sasikanth.rss.reader.utils.Constants
+import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -89,6 +91,7 @@ import twine.shared.generated.resources.comments
 import twine.shared.generated.resources.markAsRead
 import twine.shared.generated.resources.markAsUnRead
 import twine.shared.generated.resources.moreMenuOptions
+import twine.shared.generated.resources.openArchive
 import twine.shared.generated.resources.openWebsite
 import twine.shared.generated.resources.readingTimeEstimate
 import twine.shared.generated.resources.share
@@ -514,6 +517,22 @@ private fun PostActionsMenuItems(
         onDropdownChange(false)
         delay(150)
         linkHandler.openLink(postLink)
+      }
+    },
+  )
+
+  val openArchiveLabel = stringResource(Res.string.openArchive)
+
+  DropdownMenuItem(
+    modifier = Modifier.fillMaxWidth(),
+    leadingIcon = TwineIcons.Archive,
+    text = openArchiveLabel,
+    contentDescription = openArchiveLabel,
+    onClick = {
+      coroutineScope.launch {
+        onDropdownChange(false)
+        delay(150)
+        linkHandler.openLink("https://archive.is/newest/" + postLink.encodeURLParameter())
       }
     },
   )

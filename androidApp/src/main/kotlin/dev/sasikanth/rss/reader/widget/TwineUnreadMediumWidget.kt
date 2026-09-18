@@ -266,8 +266,7 @@ class TwineUnreadMediumWidget : GlanceAppWidget() {
 
       if (post.readingTimeEstimate > 0) {
         Text(
-          text =
-            " • ${context.getString(R.string.unit_minutes, post.readingTimeEstimate)} read",
+          text = " • ${context.getString(R.string.unit_minutes, post.readingTimeEstimate)} read",
           style =
             TextStyle(
               color = GlanceTheme.colors.onSurfaceVariant,
